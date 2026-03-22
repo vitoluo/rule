@@ -1,4 +1,4 @@
-name: Convert GeoSite to Loon
+name: Convert GeoSite
 
 on:
   schedule:
