@@ -2,47 +2,48 @@ name: Convert GeoSite
 
 on:
   schedule:
-    - cron: '30 0 * * 6'
+  - cron: '30 0 * * 6'
   workflow_dispatch:
+
 
 jobs:
   convert:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main branch
-        uses: actions/checkout@v4
+    - name: Checkout main branch
+      uses: actions/checkout@v5
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25.x'
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.x'
 
-      - name: Run conversion
-        run: |
-          go run main.go
+    - name: Run conversion
+      run: |
+        go run main.go
 
-      - name: Deploy to releases branch
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Clone the releases branch to a temporary directory
-          git clone --single-branch --branch releases https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git releases_branch || {
-            # If releases branch doesn't exist, create it
-            mkdir releases_branch
-            cd releases_branch
-            git init
-            git checkout -b releases
-            git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            cd ..
-          }
-          
-          # Copy loon folder to releases_branch
-          rm -rf releases_branch/loon
-          cp -r loon releases_branch/
-          
-          # Commit and push
+    - name: Deploy to releases branch
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Clone the releases branch to a temporary directory
+        git clone --single-branch --branch releases https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git releases_branch || {
+          # If releases branch doesn't exist, create it
+          mkdir releases_branch
           cd releases_branch
-          git add .
-          git commit -m "Update Loon rules: $(date)" || echo "No changes to commit"
-          git push origin releases
+          git init
+          git checkout -b releases
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          cd ..
+        }
+
+        # Copy loon folder to releases_branch
+        rm -rf releases_branch/loon
+        cp -r loon releases_branch/
+
+        # Commit and push
+        cd releases_branch
+        git add .
+        git commit -m "Update Loon rules: $(date)" || echo "No changes to commit"
+        git push origin releases

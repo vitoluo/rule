@@ -85,6 +85,7 @@ func main() {
 						// but it might support URL-REGEX. However, for geosite, regex is often problematic.
 						// We'll skip or mark it.
 						fmt.Printf("Skipping regex rule in %s: %s\n", ruleName, domain.Value)
+						continue
 					case routercommon.Domain_RootDomain:
 						line = "DOMAIN-SUFFIX," + domain.Value
 					case routercommon.Domain_Full:
