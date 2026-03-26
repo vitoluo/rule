@@ -38,12 +38,15 @@ jobs:
           cd ..
         }
 
-        # Copy loon folder to releases_branch
-        rm -rf releases_branch/loon
-        cp -r loon releases_branch/
+        # Copy folders to releases_branch
+        rm -rf releases_branch/loon releases_branch/clash releases_branch/dat
+        mkdir -p releases_branch/loon releases_branch/clash releases_branch/dat
+        cp -r loon/. releases_branch/loon/
+        cp -r clash/. releases_branch/clash/
+        cp -r dat/. releases_branch/dat/
 
         # Commit and push
         cd releases_branch
         git add .
-        git commit -m "Update Loon rules: $(date)" || echo "No changes to commit"
+        git commit -m "Update rules: $(date)" || echo "No changes to commit"
         git push origin releases
