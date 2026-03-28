@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
@@ -15,7 +16,7 @@ import (
 
 func main() {
 	// 1. Download geosite.dat
-	url := "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+	url := "https://ghproxy.net/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
 	fmt.Printf("Downloading %s...\n", url)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -146,23 +147,42 @@ func parseV2RayRule(line string) *routercommon.Domain {
 		return nil
 	}
 
-	domain := &routercommon.Domain{}
-	if strings.HasPrefix(line, "full:") {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	rawRule := parts[0]
+	var attrs []*routercommon.Domain_Attribute
+	for i := 1; i < len(parts); i++ {
+		attrStr := parts[i]
+		if strings.HasPrefix(attrStr, "@") {
+			attrs = append(attrs, &routercommon.Domain_Attribute{
+				Key: attrStr[1:],
+			})
+		}
+	}
+
+	domain := &routercommon.Domain{
+		Attribute: attrs,
+	}
+
+	if strings.HasPrefix(rawRule, "full:") {
 		domain.Type = routercommon.Domain_Full
-		domain.Value = line[5:]
-	} else if strings.HasPrefix(line, "domain:") {
+		domain.Value = rawRule[5:]
+	} else if strings.HasPrefix(rawRule, "domain:") {
 		domain.Type = routercommon.Domain_RootDomain
-		domain.Value = line[7:]
-	} else if strings.HasPrefix(line, "keyword:") {
+		domain.Value = rawRule[7:]
+	} else if strings.HasPrefix(rawRule, "keyword:") {
 		domain.Type = routercommon.Domain_Plain
-		domain.Value = line[8:]
-	} else if strings.HasPrefix(line, "regexp:") {
+		domain.Value = rawRule[8:]
+	} else if strings.HasPrefix(rawRule, "regexp:") {
 		domain.Type = routercommon.Domain_Regex
-		domain.Value = line[7:]
+		domain.Value = rawRule[7:]
 	} else {
 		// Default to domain:
 		domain.Type = routercommon.Domain_RootDomain
-		domain.Value = line
+		domain.Value = rawRule
 	}
 	return domain
 }
@@ -179,7 +199,8 @@ func processCustomRules() {
 
 	os.MkdirAll("loon", 0755)
 	os.MkdirAll("clash", 0755)
-	os.MkdirAll("dat", 0755)
+
+	geoSiteList := &routercommon.GeoSiteList{}
 
 	for _, file := range files {
 		if file.IsDir() {
@@ -218,26 +239,43 @@ func processCustomRules() {
 			}
 		}
 
+		// Sort domains for consistency
+		sort.Slice(domains, func(i, j int) bool {
+			if domains[i].Type != domains[j].Type {
+				return domains[i].Type < domains[j].Type
+			}
+			return domains[i].Value < domains[j].Value
+		})
+
 		// Write Loon and Clash
 		os.WriteFile(filepath.Join("loon", fileName), []byte(strings.Join(loonLines, "\n")), 0644)
 		os.WriteFile(filepath.Join("clash", fileName), []byte(strings.Join(clashLines, "\n")), 0644)
 
-		// Write Dat
+		// Add to GeoSiteList
 		geoSite := &routercommon.GeoSite{
-			CountryCode: strings.ToUpper(siteName),
+			CountryCode: siteName,
 			Domain:      domains,
 		}
-		geoSiteList := &routercommon.GeoSiteList{
-			Entry: []*routercommon.GeoSite{geoSite},
-		}
-		data, err := proto.Marshal(geoSiteList)
-		if err != nil {
-			fmt.Printf("Error marshaling %s: %v\n", siteName, err)
-			continue
-		}
-		datPath := filepath.Join("dat", siteName+".dat")
-		os.WriteFile(datPath, data, 0644)
+		geoSiteList.Entry = append(geoSiteList.Entry, geoSite)
 
-		fmt.Printf("Processed custom rule: %s -> loon, clash, %s\n", fileName, datPath)
+		fmt.Printf("Processed custom rule: %s -> loon, clash, tag: %s\n", fileName, geoSite.CountryCode)
+	}
+
+	// Sort GeoSite entries by tag
+	sort.Slice(geoSiteList.Entry, func(i, j int) bool {
+		return geoSiteList.Entry[i].CountryCode < geoSiteList.Entry[j].CountryCode
+	})
+
+	// Write custom.dat
+	data, err := proto.Marshal(geoSiteList)
+	if err != nil {
+		fmt.Printf("Error marshaling custom.dat: %v\n", err)
+		return
+	}
+	err = os.WriteFile("custom.dat", data, 0644)
+	if err != nil {
+		fmt.Printf("Error writing custom.dat: %v\n", err)
+	} else {
+		fmt.Println("Successfully generated custom.dat")
 	}
 }
