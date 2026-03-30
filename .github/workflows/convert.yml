@@ -41,9 +41,10 @@ jobs:
         # Copy folders to releases_branch
         rm -rf releases_branch/loon releases_branch/clash
         mkdir -p releases_branch/loon releases_branch/clash
-        cp -r loon/. releases_branch/loon/
-        cp -r clash/. releases_branch/clash/
-        cp custom.dat releases_branch/
+        cp -r tmp/loon/. releases_branch/loon/
+        cp -r tmp/clash/. releases_branch/clash/
+        cp tmp/custom.dat releases_branch/
+        cp tmp/asn.dat releases_branch/
 
         # Commit and push
         cd releases_branch

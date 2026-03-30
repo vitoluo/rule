@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,46 +11,173 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/oschwald/maxminddb-golang"
 	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
 	"google.golang.org/protobuf/proto"
 )
 
+type Config struct {
+	GeositeURL  string `json:"geosite_url"`
+	AsnMmdbURL  string `json:"asn_mmdb_url"`
+}
+
 func main() {
-	// 1. Download geosite.dat
-	url := "https://ghproxy.net/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-	fmt.Printf("Downloading %s...\n", url)
-	resp, err := http.Get(url)
+	// 0. Load config
+	config, err := loadConfig("config.json")
 	if err != nil {
-		fmt.Printf("Error downloading geosite.dat: %v\n", err)
+		fmt.Printf("Error loading config: %v\n", err)
+		return
+	}
+
+	// 1. Download geosite.dat
+	geositeData, err := downloadFile(config.GeositeURL, "tmp/geosite.dat")
+	if err != nil {
+		fmt.Printf("Error downloading/reading geosite.dat: %v\n", err)
 	} else {
-		defer resp.Body.Close()
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Printf("Error reading download body: %v\n", err)
+		// 2. Parse geosite.dat
+		fmt.Println("Parsing geosite.dat...")
+		var geoSiteList routercommon.GeoSiteList
+		if err := proto.Unmarshal(geositeData, &geoSiteList); err != nil {
+			fmt.Printf("Error unmarshaling geosite.dat: %v\n", err)
 		} else {
-			// 2. Parse geosite.dat
-			fmt.Println("Parsing geosite.dat...")
-			var geoSiteList routercommon.GeoSiteList
-			if err := proto.Unmarshal(data, &geoSiteList); err != nil {
-				fmt.Printf("Error unmarshaling geosite.dat: %v\n", err)
+			// 3. Read convert-rule.list and convert to loon
+			rulesToConvert, err := readRulesToConvert("convert-rule.list")
+			if err != nil {
+				fmt.Printf("Error reading convert-rule.list: %v\n", err)
 			} else {
-				// 3. Read convert-rule.list and convert to loon
-				rulesToConvert, err := readRulesToConvert("convert-rule.list")
-				if err != nil {
-					fmt.Printf("Error reading convert-rule.list: %v\n", err)
-				} else {
-					os.MkdirAll("loon", 0755)
-					for _, ruleName := range rulesToConvert {
-						convertGeositeToLoon(ruleName, &geoSiteList)
-					}
+				os.MkdirAll("tmp/loon", 0755)
+				for _, ruleName := range rulesToConvert {
+					convertGeositeToLoon(ruleName, &geoSiteList)
 				}
 			}
 		}
 	}
 
-	// 4. Process custom rules
+	// 4. Download and convert GeoLite2-ASN.mmdb
+	_, err = downloadFile(config.AsnMmdbURL, "tmp/GeoLite2-ASN.mmdb")
+	if err != nil {
+		fmt.Printf("Error downloading/reading GeoLite2-ASN.mmdb: %v\n", err)
+	} else {
+		fmt.Println("Converting GeoLite2-ASN.mmdb to asn.dat...")
+		err = convertAsnToDat("tmp/GeoLite2-ASN.mmdb", "tmp/asn.dat")
+		if err != nil {
+			fmt.Printf("Error converting ASN to dat: %v\n", err)
+		} else {
+			fmt.Println("Successfully generated tmp/asn.dat")
+		}
+	}
+
+	// 5. Process custom rules
 	fmt.Println("Processing custom rules...")
 	processCustomRules()
+}
+
+func loadConfig(filename string) (*Config, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	err = json.Unmarshal(data, &config)
+	return &config, err
+}
+
+func downloadFile(url string, cachePath string) ([]byte, error) {
+	// Check cache
+	if data, err := os.ReadFile(cachePath); err == nil {
+		fmt.Printf("Using cached file: %s\n", cachePath)
+		return data, nil
+	}
+
+	// Download
+	fmt.Printf("Downloading %s...\n", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	os.MkdirAll(filepath.Dir(cachePath), 0755)
+	
+	out, err := os.Create(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.ReadFile(cachePath)
+}
+
+func convertAsnToDat(mmdbPath, outputPath string) error {
+	db, err := maxminddb.Open(mmdbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	type ASNRecord struct {
+		ASN uint32 `maxminddb:"autonomous_system_number"`
+	}
+
+	networks := db.Networks(maxminddb.SkipAliasedNetworks)
+	asnMap := make(map[uint32][]*routercommon.CIDR)
+
+	for networks.Next() {
+		var record ASNRecord
+		network, err := networks.Network(&record)
+		if err != nil {
+			return err
+		}
+
+		if record.ASN == 0 {
+			continue
+		}
+
+		ip := network.IP
+		if ip4 := ip.To4(); ip4 != nil {
+			ip = ip4
+		}
+
+		prefix, _ := network.Mask.Size()
+		cidr := &routercommon.CIDR{
+			Ip:     ip,
+			Prefix: uint32(prefix),
+		}
+		asnMap[record.ASN] = append(asnMap[record.ASN], cidr)
+	}
+
+	if networks.Err() != nil {
+		return networks.Err()
+	}
+
+	geoIPList := &routercommon.GeoIPList{}
+	for asn, cidrs := range asnMap {
+		geoIPList.Entry = append(geoIPList.Entry, &routercommon.GeoIP{
+			CountryCode: fmt.Sprintf("%d", asn),
+			Cidr:        cidrs,
+		})
+	}
+
+	// Sort by tag for consistency
+	sort.Slice(geoIPList.Entry, func(i, j int) bool {
+		return geoIPList.Entry[i].CountryCode < geoIPList.Entry[j].CountryCode
+	})
+
+	data, err := proto.Marshal(geoIPList)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(outputPath, data, 0644)
 }
 
 func readRulesToConvert(filename string) ([]string, error) {
@@ -107,7 +235,7 @@ func convertGeositeToLoon(ruleName string, geoSiteList *routercommon.GeoSiteList
 	}
 
 	if found && len(domains) > 0 {
-		outputPath := fmt.Sprintf("loon/%s.list", ruleName)
+		outputPath := fmt.Sprintf("tmp/loon/%s.list", ruleName)
 		os.WriteFile(outputPath, []byte(strings.Join(domains, "\n")), 0644)
 		fmt.Printf("Saved %s from geosite.dat\n", outputPath)
 	}
@@ -197,8 +325,8 @@ func processCustomRules() {
 		return
 	}
 
-	os.MkdirAll("loon", 0755)
-	os.MkdirAll("clash", 0755)
+	os.MkdirAll("tmp/loon", 0755)
+	os.MkdirAll("tmp/clash", 0755)
 
 	geoSiteList := &routercommon.GeoSiteList{}
 
@@ -248,8 +376,8 @@ func processCustomRules() {
 		})
 
 		// Write Loon and Clash
-		os.WriteFile(filepath.Join("loon", fileName), []byte(strings.Join(loonLines, "\n")), 0644)
-		os.WriteFile(filepath.Join("clash", fileName), []byte(strings.Join(clashLines, "\n")), 0644)
+		os.WriteFile(filepath.Join("tmp/loon", fileName), []byte(strings.Join(loonLines, "\n")), 0644)
+		os.WriteFile(filepath.Join("tmp/clash", fileName), []byte(strings.Join(clashLines, "\n")), 0644)
 
 		// Add to GeoSiteList
 		geoSite := &routercommon.GeoSite{
@@ -258,7 +386,7 @@ func processCustomRules() {
 		}
 		geoSiteList.Entry = append(geoSiteList.Entry, geoSite)
 
-		fmt.Printf("Processed custom rule: %s -> loon, clash, tag: %s\n", fileName, geoSite.CountryCode)
+		fmt.Printf("Processed custom rule: %s -> tmp/loon, tmp/clash, tag: %s\n", fileName, geoSite.CountryCode)
 	}
 
 	// Sort GeoSite entries by tag
@@ -272,10 +400,10 @@ func processCustomRules() {
 		fmt.Printf("Error marshaling custom.dat: %v\n", err)
 		return
 	}
-	err = os.WriteFile("custom.dat", data, 0644)
+	err = os.WriteFile("tmp/custom.dat", data, 0644)
 	if err != nil {
 		fmt.Printf("Error writing custom.dat: %v\n", err)
 	} else {
-		fmt.Println("Successfully generated custom.dat")
+		fmt.Println("Successfully generated tmp/custom.dat")
 	}
 }

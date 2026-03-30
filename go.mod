@@ -10,5 +10,6 @@ require (
 require (
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )
