@@ -235,6 +235,8 @@ func convertGeositeToLoon(ruleName string, geoSiteList *routercommon.GeoSiteList
 	}
 
 	if found && len(domains) > 0 {
+		// 按字符串升序排列
+		sort.Strings(domains)
 		outputPath := fmt.Sprintf("tmp/loon/%s.list", ruleName)
 		os.WriteFile(outputPath, []byte(strings.Join(domains, "\n")), 0644)
 		fmt.Printf("Saved %s from geosite.dat\n", outputPath)
@@ -374,6 +376,24 @@ func processCustomRules() {
 			}
 			return domains[i].Value < domains[j].Value
 		})
+
+		// 排序后重新生成 Loon 和 Clash 规则
+		loonLines = loonLines[:0]
+		clashLines = clashLines[:0]
+		for _, domain := range domains {
+			loonRule := domainToLoon(domain)
+			if loonRule != "" {
+				loonLines = append(loonLines, loonRule)
+			}
+			clashRule := domainToClash(domain)
+			if clashRule != "" {
+				clashLines = append(clashLines, clashRule)
+			}
+		}
+
+		// 按字符串升序排列
+		sort.Strings(loonLines)
+		sort.Strings(clashLines)
 
 		// Write Loon and Clash
 		os.WriteFile(filepath.Join("tmp/loon", fileName), []byte(strings.Join(loonLines, "\n")), 0644)
